@@ -3,7 +3,6 @@ package expo.modules.a11ycontrol
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -16,7 +15,6 @@ import android.view.Display
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.TextView
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.graphics.drawable.GradientDrawable
@@ -98,23 +96,16 @@ class AssistantAccessibilityService : AccessibilityService() {
         duration = 1400; repeatMode = ValueAnimator.REVERSE; repeatCount = ValueAnimator.INFINITE; start()
       }
 
-      // Icon only: small orange disc with a stop square. This is the only touchable piece.
-      val icon = TextView(this).apply {
-        text = "■"
-        setTextColor(Color.WHITE)
-        textSize = 15f
-        gravity = Gravity.CENTER
+      // Icon only: a small animated particle sphere. This is the only touchable piece; tapping it stops the task.
+      val icon = ParticleOrbView(this).apply {
         contentDescription = label
-        background = GradientDrawable(
-          GradientDrawable.Orientation.TL_BR, intArrayOf(0xFFFF6A1A.toInt(), 0xFFFF3D00.toInt()),
-        ).apply { shape = GradientDrawable.OVAL }
         setOnClickListener { AgentBridge.onStop?.invoke() }
       }
       val iconLp = WindowManager.LayoutParams(
-        dp(44), dp(44), WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        dp(58), dp(58), WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
         PixelFormat.TRANSLUCENT,
-      ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = dp(54) }
+      ).apply { gravity = Gravity.BOTTOM or Gravity.END; x = dp(18); y = dp(28) }
       wm.addView(icon, iconLp)
       stopIcon = icon
     }
