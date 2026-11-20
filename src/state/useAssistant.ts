@@ -6,7 +6,7 @@ import { useSharedValue } from 'react-native-reanimated';
 import * as A11y from '../../modules/a11y-control';
 import { runAgent, type AgentEvent } from '../agent/agent';
 import type { LlmConfig } from '../agent/llm';
-import { providerById } from '../agent/providers';
+import { modelSupportsVision, providerById } from '../agent/providers';
 import { localModelById } from '../local/catalog';
 import { isDownloaded } from '../local/downloads';
 import { downloadModel, isModelDownloaded, partialTranscribe, startConversation, startListening, stopAndTranscribe, stopConversation } from '../voice/stt';
@@ -99,7 +99,7 @@ export function useAssistant() {
     if (def.keyRequired && !p.apiKey) return { error: `Add your ${def.label} API key in Settings.` };
     if (!p.model.trim()) return { error: 'Enter a model id in Settings.' };
     if (def.id === 'custom' && !p.baseUrl.trim()) return { error: 'Enter the base URL in Settings.' };
-    return { cfg: { provider: def.id, apiKey: p.apiKey, model: p.model.trim(), baseUrl: p.baseUrl.trim(), vision: p.vision } };
+    return { cfg: { provider: def.id, apiKey: p.apiKey, model: p.model.trim(), baseUrl: p.baseUrl.trim(), vision: modelSupportsVision(def, p.model.trim(), p.vision) } };
   }, []);
 
   // ---------------------------------------------------------------- agent run

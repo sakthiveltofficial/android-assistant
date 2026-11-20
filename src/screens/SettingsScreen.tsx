@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as A11y from '../../modules/a11y-control';
-import { PROVIDERS, providerById, type ProviderId } from '../agent/providers';
+import { fetchModels } from '../agent/models';
+import { PROVIDERS, modelSupportsVision, providerById, type ProviderId } from '../agent/providers';
 import { LOCAL_MODELS, totalSizeMB, type LocalModel } from '../local/catalog';
 import { useLocalModels } from '../local/useLocalModels';
 import type { Settings } from '../state/settings';
@@ -55,6 +56,24 @@ function Field({ label, children, help }: { label: string; children: ReactNode; 
   );
 }
 
+function ModelPicker({ options, value, onPick }: { options: string[]; value: string; onPick: (m: string) => void }) {
+  return (
+    <View style={s.picker}>
+      <ScrollView nestedScrollEnabled style={{ maxHeight: 260 }}>
+        {options.map((m, i) => {
+          const on = m === value;
+          return (
+            <Pressable key={m} style={[s.opt, i > 0 && s.rowLineTop]} onPress={() => onPick(m)}>
+              <Text style={[s.optText, on && { color: colors.fg, fontFamily: fonts.semibold }]} numberOfLines={1}>{m}</Text>
+              <Ionicons name={on ? 'radio-button-on' : 'radio-button-off'} size={20} color={on ? colors.orange : colors.faint} />
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
 const Pill = ({ ok, text }: { ok: boolean; text: string }) => (
   <View style={[s.pill, { backgroundColor: ok ? 'rgba(80,200,120,0.15)' : 'rgba(255,255,255,0.08)' }]}>
     <View style={[s.dot, { backgroundColor: ok ? '#4cc777' : colors.muted }]} />
@@ -68,11 +87,47 @@ export function SettingsScreen(p: Props) {
   const [draft, setDraft] = useState<Settings>(p.settings);
   const [showKey, setShowKey] = useState(false);
   const local = useLocalModels();
+  const [fetched, setFetched] = useState<Partial<Record<ProviderId, string[]>>>({});
+  const [fetching, setFetching] = useState(false);
+  const [fetchErr, setFetchErr] = useState('');
+  const keyAtFetch = useRef('');
   useEffect(() => setDraft(p.settings), [p.settings]);
 
   const def = providerById(draft.active);
   const cur = draft.providers[draft.active];
   const dirty = JSON.stringify(draft) !== JSON.stringify(p.settings);
+
+  const live = fetched[draft.active];
+  const options = live && live.length ? live : def.models;
+
+  const loadModels = async (silent: boolean) => {
+    if (def.kind === 'local') return;
+    if (def.keyRequired && !cur.apiKey) { if (!silent) setFetchErr('Paste your API key first.'); return; }
+    setFetching(true);
+    setFetchErr('');
+    try {
+      const ids = await fetchModels(draft.active, cur.apiKey, cur.baseUrl);
+      if (!ids.length) throw new Error('The provider returned no models');
+      setFetched((f) => ({ ...f, [draft.active]: ids }));
+    } catch (e: any) {
+      if (!silent) setFetchErr('Could not load the model list (' + (e?.message ?? e) + ')' + (def.id === 'custom' ? '. You can type a model name instead.' : '. Showing the built-in list.'));
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  // Hosted providers: pull the live list once a key is available (silent; the built-in list is the fallback).
+  useEffect(() => {
+    if (def.id === 'custom' || def.kind === 'local' || !cur.apiKey || fetched[draft.active] || keyAtFetch.current === draft.active + cur.apiKey) return;
+    keyAtFetch.current = draft.active + cur.apiKey;
+    loadModels(true);
+  }, [draft.active, cur.apiKey]);
+
+  // A saved model that is no longer offered (e.g. an old DeepSeek id) falls back to the default.
+  useEffect(() => {
+    if (def.id === 'custom' || def.kind === 'local') return;
+    if (!options.includes(cur.model)) editProvider({ model: def.models.includes(cur.model) ? cur.model : def.defaultModel });
+  }, [draft.active, options.length]);
 
   const edit = (patch: Partial<Settings>) => setDraft((d) => ({ ...d, ...patch }));
   const editProvider = (patch: Partial<typeof cur>) => edit({ providers: { ...draft.providers, [draft.active]: { ...cur, ...patch } } });
@@ -117,24 +172,12 @@ export function SettingsScreen(p: Props) {
           {!!def.note && <Text style={[s.hint, { marginTop: 10 }]}>{def.note}</Text>}
 
           {def.kind !== 'local' && (
-            <View style={{ marginTop: 14, gap: 14 }}>
+            <View style={{ marginTop: 14, gap: 16 }}>
               {def.id === 'custom' && (
                 <Field label="Base URL" help="Any OpenAI-compatible server (OpenRouter, Groq, Ollama, LM Studio…).">
                   <TextInput style={s.input} value={cur.baseUrl} onChangeText={(t) => editProvider({ baseUrl: t })} autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholder="https://openrouter.ai/api/v1" placeholderTextColor={colors.faint} />
                 </Field>
               )}
-              <Field label="Model">
-                <TextInput style={s.input} value={cur.model} onChangeText={(t) => editProvider({ model: t })} autoCapitalize="none" autoCorrect={false} placeholder="Model id" placeholderTextColor={colors.faint} />
-                {def.models.length > 0 && (
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingTop: 8 }}>
-                    {def.models.map((m) => (
-                      <Pressable key={m} style={[s.mini, cur.model === m && s.miniOn]} onPress={() => editProvider({ model: m })}>
-                        <Text style={[s.miniText, cur.model === m && { color: colors.fg }]}>{m}</Text>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                )}
-              </Field>
               <Field label={def.keyRequired ? 'API key' : 'API key (optional)'} help="Stored encrypted on this device and only sent to this provider.">
                 <View style={s.inputWrap}>
                   <TextInput style={[s.input, { flex: 1, backgroundColor: 'transparent' }]} value={cur.apiKey} onChangeText={(t) => editProvider({ apiKey: t })} secureTextEntry={!showKey} autoCapitalize="none" autoCorrect={false} placeholder="Paste your key" placeholderTextColor={colors.faint} />
@@ -143,6 +186,28 @@ export function SettingsScreen(p: Props) {
                   </Pressable>
                 </View>
               </Field>
+
+              <Field label="Model">
+                {def.id === 'custom' ? (
+                  <>
+                    <Pressable style={[s.small, { alignSelf: 'flex-start', opacity: fetching ? 0.6 : 1 }]} onPress={() => loadModels(false)} disabled={fetching}>
+                      <Text style={s.smallText}>{fetching ? 'Loading…' : live ? 'Refresh model list' : 'Load models from this server'}</Text>
+                    </Pressable>
+                    {!!fetchErr && <Text style={[s.hint, { color: '#e5736b' }]}>{fetchErr}</Text>}
+                    {!!live && live.length > 0 && <ModelPicker options={live} value={cur.model} onPick={(m) => editProvider({ model: m })} />}
+                    <TextInput style={s.input} value={cur.model} onChangeText={(t) => editProvider({ model: t })} autoCapitalize="none" autoCorrect={false} placeholder="…or type a model name" placeholderTextColor={colors.faint} />
+                  </>
+                ) : (
+                  <>
+                    <ModelPicker options={options} value={cur.model} onPick={(m) => apply({ providers: { ...draft.providers, [draft.active]: { ...cur, model: m } } })} />
+                    <Text style={s.hint}>
+                      {fetching ? 'Loading your available models…' : live ? 'Live list from ' + def.label + ' for your key.' : cur.apiKey ? fetchErr || 'Built-in list.' : 'Built-in list. Add your key to load the full list.'}
+                    </Text>
+                    {!modelSupportsVision(def, cur.model, cur.vision) && <Text style={s.hint}>This model is text-only, so the assistant reads the screen as text.</Text>}
+                  </>
+                )}
+              </Field>
+
               {def.id === 'custom' && (
                 <View style={s.switchRow}>
                   <View style={{ flex: 1 }}>
@@ -269,6 +334,9 @@ const s = StyleSheet.create({
   fieldLabel: { color: colors.text, fontFamily: fonts.medium, fontSize: 13 },
   input: { backgroundColor: colors.chip, borderRadius: 12, paddingHorizontal: 14, height: 46, color: colors.fg, fontFamily: fonts.regular, fontSize: 14 },
   inputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.chip, borderRadius: 12 },
+  picker: { backgroundColor: colors.chip, borderRadius: 12, paddingHorizontal: 14 },
+  opt: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, minHeight: 46 },
+  optText: { flex: 1, color: colors.muted, fontFamily: fonts.regular, fontSize: 14 },
   mini: { backgroundColor: colors.bg, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: 'transparent' },
   miniOn: { borderColor: colors.orange },
   miniText: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12 },
