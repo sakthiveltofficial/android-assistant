@@ -1,0 +1,14 @@
+Android Assistant
+Copyright 2026 Android Assistant contributors
+
+This product is an independent, on-device re-implementation of ideas from
+Google's Artemis project (https://github.com/google/artemis, Apache License 2.0):
+the observe -> decide -> act agent loop, the plan / operate / validate / summarize
+graph, and the accessibility-tree + screenshot observation model. No Artemis source
+code is bundled; Artemis is credited here as the inspiration and reference design.
+
+This product includes software developed by third parties, each under its own
+license: Expo, React Native, React Native Skia, Reanimated (MIT), whisper.cpp and
+whisper.rn (MIT), llama.cpp and llama.rn (MIT). Model weights that the app can
+download (Whisper, Gemma) are NOT part of this repository and are governed by their
+own licenses and terms; see their model pages before redistributing them.
