@@ -2,8 +2,20 @@
 // Nothing is sent over the network except the one-time model download.
 import { PermissionsAndroid } from 'react-native';
 import * as FS from 'expo-file-system/legacy';
-import LiveAudioStream from '@fugood/react-native-audio-pcm-stream';
-import { initWhisper, type WhisperContext } from 'whisper.rn/index';
+import type { WhisperContext } from 'whisper.rn/index';
+
+// Loaded lazily so the app still starts in Expo Go, where these native modules don't exist.
+let LiveAudioStream: typeof import('@fugood/react-native-audio-pcm-stream').default;
+let initWhisper: typeof import('whisper.rn/index').initWhisper;
+function loadNativeVoice() {
+  if (LiveAudioStream) return;
+  try {
+    LiveAudioStream = require('@fugood/react-native-audio-pcm-stream').default;
+    initWhisper = require('whisper.rn/index').initWhisper;
+  } catch {
+    throw new Error('Voice needs the development build (it is not available in Expo Go).');
+  }
+}
 
 // ~32 MB quantized English-only tiny model from the whisper.cpp project.
 const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin';
@@ -37,6 +49,7 @@ export async function downloadModel(onProgress: (fraction: number) => void): Pro
 }
 
 async function getContext(): Promise<WhisperContext> {
+  loadNativeVoice();
   if (!ctx) ctx = await initWhisper({ filePath: MODEL_PATH });
   return ctx;
 }
@@ -87,6 +100,7 @@ export async function startListening(opts: { onAutoStop?: () => void; onLevel?: 
   const perm = await PermissionsAndroid.request('android.permission.RECORD_AUDIO');
   if (perm !== PermissionsAndroid.RESULTS.GRANTED) throw new Error('Microphone permission denied');
   if (!(await isModelDownloaded())) throw new Error('Voice model not downloaded yet');
+  loadNativeVoice();
   levelCb = opts.onLevel;
   if (!streamReady) {
     LiveAudioStream.init({

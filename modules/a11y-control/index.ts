@@ -49,7 +49,27 @@ type Native = {
   addListener(event: 'onStopRequested', cb: () => void): { remove(): void };
 };
 
-const native = requireNativeModule<Native>('A11yControl');
+// In Expo Go the custom native module is absent: fall back to inert stubs so the UI can still be previewed.
+function loadNative(): Native {
+  try {
+    return requireNativeModule<Native>('A11yControl');
+  } catch {
+    const no = async () => false;
+    return {
+      isServiceEnabled: () => false,
+      openAccessibilitySettings: () => {},
+      getScreen: async () => JSON.stringify({ package: '', width: 0, height: 0, elements: [] }),
+      tap: no, swipe: no, setText: no, globalAction: no, launchApp: no,
+      listApps: () => '[]',
+      setRunning: () => {},
+      addListener: () => ({ remove() {} }),
+    };
+  }
+}
+export const nativeAvailable = (() => {
+  try { requireNativeModule('A11yControl'); return true; } catch { return false; }
+})();
+const native = loadNative();
 
 export const isServiceEnabled = () => native.isServiceEnabled();
 export const openAccessibilitySettings = () => native.openAccessibilitySettings();

@@ -102,7 +102,7 @@ const s = StyleSheet.create({
   segOn: { backgroundColor: colors.orange },
   segText: { color: colors.muted, fontFamily: fonts.medium, fontSize: 13 },
   input: { backgroundColor: colors.chip, borderRadius: 10, paddingHorizontal: 14, height: 46, color: colors.fg, fontFamily: fonts.regular, fontSize: 14 },
-  btn: { backgroundColor: colors.orange, borderRadius: 10, height: 44, alignItems: 'center', justifyContent: 'center' },
-  btnText: { color: '#fff', fontFamily: fonts.semibold, fontSize: 14 },
+  btn: { backgroundColor: colors.orange, borderRadius: 10, minHeight: 44, paddingVertical: 10, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
+  btnText: { color: '#fff', fontFamily: fonts.semibold, fontSize: 14, textAlign: 'center' },
   note: { color: colors.faint, fontFamily: fonts.regular, fontSize: 11, lineHeight: 16, marginTop: 6 },
 });
