@@ -107,13 +107,14 @@ export async function startListening(opts: { onAutoStop?: () => void; onLevel?: 
       sampleRate: 16000,
       channels: 1,
       bitsPerSample: 16,
-      audioSource: 6, // VOICE_RECOGNITION
+      audioSource: 7, // VOICE_COMMUNICATION: enables the hardware echo canceller so the assistant does not hear itself
       bufferSize: 4096,
       wavFile: '',
     });
     LiveAudioStream.on('data', (b64) => {
-      if (!recording) return;
       const b = b64ToBytes(b64);
+      if (hf) return hfChunk(b);
+      if (!recording) return;
       chunks.push(b);
       levelCb?.(rmsLevel(b));
     });
@@ -154,3 +155,95 @@ export async function stopAndTranscribe(): Promise<string> {
 export function isListening(): boolean {
   return recording;
 }
+
+// ------------------------------------------------------------------------------------------------
+// Hands-free conversation: always-on mic with energy-based voice-activity detection.
+// Emits onSpeechStart as soon as the user starts talking (used to cut the assistant's speech off =
+// barge-in) and onUtterance(text) once they have stopped for ~0.9 s.
+// ------------------------------------------------------------------------------------------------
+type HandsFree = {
+  onSpeechStart: () => void;
+  onUtterance: (text: string) => void;
+  onLevel?: (l: number) => void;
+  /** True while the assistant is talking: raises the trigger bar so its own voice is not mistaken for the user. */
+  isAssistantSpeaking: () => boolean;
+};
+let hf: HandsFree | null = null;
+let hfState: { speaking: boolean; loud: number; silenceMs: number; floor: number; pre: Uint8Array[]; buf: Uint8Array[]; queue: Promise<void> } | null = null;
+const CHUNK_MS = 128; // 4096-byte buffer at 16 kHz mono PCM16
+const END_SILENCE_MS = 900;
+
+function hfChunk(b: Uint8Array) {
+  const h = hf!;
+  const st = hfState!;
+  const lvl = rmsLevel(b);
+  h.onLevel?.(lvl);
+  const assistant = h.isAssistantSpeaking();
+  const thr = Math.max(assistant ? 0.4 : 0.14, st.floor * (assistant ? 4 : 2.6));
+  const loud = lvl > thr;
+  if (!st.speaking) {
+    if (!loud) st.floor = Math.max(0.02, st.floor * 0.95 + lvl * 0.05);
+    st.pre.push(b);
+    if (st.pre.length > 4) st.pre.shift(); // keep ~0.5 s so the first syllable is not clipped
+    st.loud = loud ? st.loud + 1 : 0;
+    if (st.loud >= (assistant ? 3 : 2)) {
+      st.speaking = true;
+      st.silenceMs = 0;
+      st.buf = st.pre.slice();
+      st.pre = [];
+      h.onSpeechStart();
+    }
+    return;
+  }
+  st.buf.push(b);
+  st.silenceMs = loud ? 0 : st.silenceMs + CHUNK_MS;
+  if (st.silenceMs >= END_SILENCE_MS || st.buf.length * CHUNK_MS > MAX_RECORD_MS) {
+    const bytes = concat(st.buf);
+    st.speaking = false;
+    st.loud = 0;
+    st.buf = [];
+    // Transcribe in order, off the audio callback.
+    st.queue = st.queue.then(async () => {
+      try {
+        const text = await pcmToText(bytes);
+        if (text && hf === h) h.onUtterance(text);
+      } catch {
+        /* skip a failed utterance */
+      }
+    });
+  }
+}
+
+export async function startConversation(h: HandsFree) {
+  const perm = await PermissionsAndroid.request('android.permission.RECORD_AUDIO');
+  if (perm !== PermissionsAndroid.RESULTS.GRANTED) throw new Error('Microphone permission denied');
+  if (!(await isModelDownloaded())) throw new Error('Voice model not downloaded yet');
+  loadNativeVoice();
+  if (!streamReady) {
+    LiveAudioStream.init({ sampleRate: 16000, channels: 1, bitsPerSample: 16, audioSource: 7, bufferSize: 4096, wavFile: '' });
+    LiveAudioStream.on('data', (b64) => {
+      const b = b64ToBytes(b64);
+      if (hf) return hfChunk(b);
+      if (!recording) return;
+      chunks.push(b);
+      levelCb?.(rmsLevel(b));
+    });
+    streamReady = true;
+  }
+  hfState = { speaking: false, loud: 0, silenceMs: 0, floor: 0.03, pre: [], buf: [], queue: Promise.resolve() };
+  hf = h;
+  await getContext(); // warm the model so the first utterance is fast
+  LiveAudioStream.start();
+}
+
+export async function stopConversation() {
+  hf = null;
+  hfState = null;
+  try {
+    await LiveAudioStream.stop();
+  } catch {
+    /* already stopped */
+  }
+}
+
+export const inConversation = () => hf !== null;

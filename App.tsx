@@ -4,16 +4,20 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import { useAssistant } from './src/state/useAssistant';
-import { HomeScreen } from './src/screens/HomeScreen';
 import { VoiceScreen } from './src/screens/VoiceScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { ProfileScreen } from './src/screens/ProfileScreen';
+import { HistoryScreen } from './src/screens/HistoryScreen';
+import { AccountMenu } from './src/ui/AccountMenu';
 import { colors } from './src/ui/theme';
 
-type Screen = 'home' | 'voice' | 'settings';
+// The chat/voice screen is always the main screen. Everything else is reached from the avatar menu.
+type Screen = 'main' | 'settings' | 'profile' | 'history';
 
 export default function App() {
   const [fontsLoaded] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold });
-  const [screen, setScreen] = useState<Screen>('home');
+  const [screen, setScreen] = useState<Screen>('main');
+  const [menuOpen, setMenuOpen] = useState(false);
   const a = useAssistant();
 
   useEffect(() => {
@@ -24,35 +28,25 @@ export default function App() {
     return () => sub.remove();
   }, [a.refreshService]);
 
-  // The agent brings the app back to the front when it finishes: show the conversation.
-  useEffect(() => {
-    if (a.phase === 'running') setScreen('voice');
-  }, [a.phase]);
-
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (screen === 'home') return false;
-      setScreen('home');
+      if (menuOpen) { setMenuOpen(false); return true; }
+      if (screen === 'main') return false;
+      setScreen('main');
       return true;
     });
     return () => sub.remove();
-  }, [screen]);
+  }, [screen, menuOpen]);
 
   if (!fontsLoaded) return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
+
+  const name = a.settings.profileName;
+  const back = () => setScreen('main');
 
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      {screen === 'home' && (
-        <HomeScreen
-          history={a.history}
-          onNewChat={() => { a.newChat(); setScreen('voice'); }}
-          onOpenConvo={(c) => { a.openConvo(c); setScreen('voice'); }}
-          onStarter={(task) => { a.newChat(); setScreen('voice'); a.run(task); }}
-          onSettings={() => setScreen('settings')}
-        />
-      )}
-      {screen === 'voice' && (
+      {screen === 'main' && (
         <VoiceScreen
           phase={a.phase}
           transcript={a.transcript}
@@ -60,26 +54,51 @@ export default function App() {
           level={a.level}
           onMic={a.toggleMic}
           onCancel={a.cancel}
-          onBack={() => setScreen('home')}
-          onMenu={() => setScreen('settings')}
+          onAvatar={() => setMenuOpen(true)}
+          onNewChat={a.newChat}
+          initial={name ? name[0].toUpperCase() : undefined}
           onSend={a.run}
         />
       )}
       {screen === 'settings' && (
         <SettingsScreen
-          provider={a.provider}
-          model={a.model}
-          apiKey={a.apiKey}
+          settings={a.settings}
           serviceEnabled={a.serviceEnabled}
           modelReady={a.modelReady}
           downloading={a.downloading}
-          speakResults={a.speakResults}
-          onSpeakResults={a.setSpeakResults}
-          onSave={a.saveSettings}
+          onSave={a.updateSettings}
           onDownload={a.downloadVoice}
-          onBack={() => setScreen('home')}
+          onBack={back}
         />
       )}
+      {screen === 'profile' && (
+        <ProfileScreen
+          settings={a.settings}
+          conversations={a.history.length}
+          serviceEnabled={a.serviceEnabled}
+          onSave={a.updateSettings}
+          onBack={back}
+        />
+      )}
+      {screen === 'history' && (
+        <HistoryScreen
+          history={a.history}
+          onOpen={(c) => { a.openConvo(c); back(); }}
+          onDelete={a.deleteConvo}
+          onBack={back}
+        />
+      )}
+
+      <AccountMenu
+        visible={menuOpen}
+        name={name}
+        onClose={() => setMenuOpen(false)}
+        items={[
+          { icon: 'person-outline', label: 'Profile', onPress: () => setScreen('profile') },
+          { icon: 'time-outline', label: 'Chat history', onPress: () => setScreen('history') },
+          { icon: 'settings-outline', label: 'Settings', onPress: () => setScreen('settings') },
+        ]}
+      />
     </SafeAreaProvider>
   );
 }

@@ -18,24 +18,29 @@ type Props = {
   level: SharedValue<number>;
   onMic: () => void;
   onCancel: () => void;
-  onBack: () => void;
-  onMenu: () => void;
+  /** Opens the account menu (Profile / Chat history / Settings). */
+  onAvatar: () => void;
+  /** Clears the conversation and starts a fresh one. */
+  onNewChat: () => void;
+  /** First letter of the profile name, shown inside the avatar. */
+  initial?: string;
   onSend: (text: string) => void;
 };
 
-export function Header({ onMenu, avatarOnPress }: { onMenu: () => void; avatarOnPress?: () => void }) {
+export function Header({ onAvatar, initial }: { onAvatar: () => void; initial?: string }) {
   return (
     <View style={s.header}>
-      <Pressable onPress={onMenu} hitSlop={12} style={s.menu}>
-        <View style={s.menuLine} />
-        <View style={[s.menuLine, { width: 12 }]} />
-      </Pressable>
+      <View style={s.avatarSpacer} />
       <View style={s.pill}>
         <Text style={s.pillText}>{APP_NAME}</Text>
         <Ionicons name="chevron-down" size={11} color={colors.muted} style={{ marginLeft: 4 }} />
       </View>
-      <Pressable onPress={avatarOnPress} style={s.avatar}>
-        <Ionicons name="person" size={18} color={colors.muted} />
+      <Pressable onPress={onAvatar} style={s.avatar} hitSlop={8}>
+        {initial ? (
+          <Text style={s.avatarText}>{initial}</Text>
+        ) : (
+          <Ionicons name="person" size={18} color={colors.muted} />
+        )}
       </Pressable>
     </View>
   );
@@ -61,7 +66,7 @@ export function VoiceScreen(p: Props) {
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <BottomGlow tone={tone} height={340} />
       <View style={{ paddingTop: insets.top + 8, flex: 1 }}>
-        <Header onMenu={p.onMenu} />
+        <Header onAvatar={p.onAvatar} initial={p.initial} />
 
         {showChat ? (
           <ScrollView contentContainerStyle={s.chat} showsVerticalScrollIndicator={false}>
@@ -133,7 +138,7 @@ export function VoiceScreen(p: Props) {
               <Ionicons name={listening ? 'stop' : 'mic-outline'} size={listening ? 20 : 24} color="#fff" />
             </LinearGradient>
           </Pressable>
-          <Pressable style={s.sideBtn} onPress={listening || running ? p.onCancel : p.onBack}>
+          <Pressable style={s.sideBtn} onPress={listening || running ? p.onCancel : p.onNewChat}>
             <Ionicons name="close" size={22} color={colors.text} />
           </Pressable>
         </View>
@@ -149,6 +154,8 @@ const s = StyleSheet.create({
   menuLine: { height: 2, width: 18, borderRadius: 1, backgroundColor: colors.muted },
   pill: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.chip, borderRadius: 8, paddingHorizontal: 14, height: 32 },
   pillText: { color: colors.text, fontFamily: fonts.medium, fontSize: 14 },
+  avatarSpacer: { width: 34 },
+  avatarText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 15 },
   avatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.chip, alignItems: 'center', justifyContent: 'center' },
 
   stage: { flex: 1, alignItems: 'center' },

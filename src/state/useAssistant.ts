@@ -1,20 +1,22 @@
 // Single place that wires voice -> agent -> native control -> UI state.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, PermissionsAndroid, Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 import * as FS from 'expo-file-system/legacy';
 import { useSharedValue } from 'react-native-reanimated';
 import * as A11y from '../../modules/a11y-control';
 import { runAgent, type AgentEvent } from '../agent/agent';
-import { DEFAULT_MODELS, type Provider } from '../agent/llm';
-import { downloadModel, isModelDownloaded, partialTranscribe, startListening, stopAndTranscribe } from '../voice/stt';
-import { speak, stopSpeaking } from '../voice/tts';
+import type { LlmConfig } from '../agent/llm';
+import { providerById } from '../agent/providers';
+import { localModelById } from '../local/catalog';
+import { isDownloaded } from '../local/downloads';
+import { downloadModel, isModelDownloaded, partialTranscribe, startConversation, startListening, stopAndTranscribe, stopConversation } from '../voice/stt';
+import { isSpeaking, speak, stopSpeaking } from '../voice/tts';
+import { defaultSettings, loadSettings, saveSettings, type Settings } from './settings';
 
 export type Phase = 'idle' | 'listening' | 'transcribing' | 'running';
 export type Msg = { role: 'user' | 'assistant'; text: string };
 export type Convo = { id: string; title: string; at: number; messages: Msg[] };
 
-const K = { key: 'llm_api_key', provider: 'llm_provider', model: 'llm_model' };
 const HISTORY_PATH = (FS.documentDirectory ?? '') + 'conversations.json';
 const OWN_PACKAGE = 'com.sakthivel.androidassistant';
 
@@ -30,34 +32,34 @@ function confirmAsync(message: string): Promise<boolean> {
 export function useAssistant() {
   const level = useSharedValue(0);
   const [serviceEnabled, setServiceEnabled] = useState(false);
-  const [provider, setProvider] = useState<Provider>('anthropic');
-  const [model, setModel] = useState(DEFAULT_MODELS.anthropic);
-  const [apiKey, setApiKey] = useState('');
+  const [settings, setSettingsState] = useState<Settings>(defaultSettings());
   const [phase, setPhase] = useState<Phase>('idle');
   const [transcript, setTranscript] = useState('');
   const [messages, setMessages] = useState<Msg[]>([]);
   const [modelReady, setModelReady] = useState(false);
   const [downloading, setDownloading] = useState<number | null>(null);
-  const [speakResults, setSpeakResults] = useState(true);
   const [history, setHistory] = useState<Convo[]>([]);
 
   const abortRef = useRef<AbortController | null>(null);
   const partialTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const messagesRef = useRef<Msg[]>([]);
   const convoId = useRef<string>('');
+  const [conversation, setConversation] = useState(false);
+  const convoOn = useRef(false);
+  const phaseRef = useRef<Phase>('idle');
+  const runRef = useRef<(g: string) => void>(() => {});
+  const settingsRef = useRef(settings);
   messagesRef.current = messages;
+  phaseRef.current = phase;
+  settingsRef.current = settings;
 
   // ---------------------------------------------------------------- load / persist
   useEffect(() => {
     (async () => {
-      const [k, p, m] = await Promise.all(Object.values(K).map((n) => SecureStore.getItemAsync(n)));
-      if (k) setApiKey(k);
-      if (p === 'anthropic' || p === 'openai' || p === 'gemini') setProvider(p);
-      if (m) setModel(m);
+      setSettingsState(await loadSettings());
       setModelReady(await isModelDownloaded());
       try {
-        const raw = await FS.readAsStringAsync(HISTORY_PATH);
-        setHistory(JSON.parse(raw));
+        setHistory(JSON.parse(await FS.readAsStringAsync(HISTORY_PATH)));
       } catch {
         /* no history yet */
       }
@@ -66,14 +68,11 @@ export function useAssistant() {
 
   const refreshService = useCallback(() => setServiceEnabled(A11y.isServiceEnabled()), []);
 
-  const saveSettings = async (next: { provider: Provider; model: string; apiKey: string }) => {
-    setProvider(next.provider);
-    setModel(next.model);
-    setApiKey(next.apiKey);
-    await SecureStore.setItemAsync(K.key, next.apiKey);
-    await SecureStore.setItemAsync(K.provider, next.provider);
-    await SecureStore.setItemAsync(K.model, next.model);
-  };
+  const updateSettings = useCallback(async (next: Settings) => {
+    setSettingsState(next);
+    settingsRef.current = next;
+    await saveSettings(next);
+  }, []);
 
   const persistConvo = useCallback(async (msgs: Msg[]) => {
     if (!msgs.length) return;
@@ -86,13 +85,31 @@ export function useAssistant() {
     });
   }, []);
 
+  /** Builds the model config for the active provider, or explains what is missing. */
+  const resolveLlm = useCallback(async (): Promise<{ cfg?: LlmConfig; error?: string }> => {
+    const s = settingsRef.current;
+    const def = providerById(s.active);
+    const p = s.providers[s.active];
+    if (def.kind === 'local') {
+      const m = localModelById(s.localModelId);
+      if (!m) return { error: 'Pick an on-device model in Settings first.' };
+      if (!(await isDownloaded(m))) return { error: `Download "${m.name}" in Settings first.` };
+      return { cfg: { provider: 'local', apiKey: '', model: m.id, vision: s.localVision && !!m.mmproj } };
+    }
+    if (def.keyRequired && !p.apiKey) return { error: `Add your ${def.label} API key in Settings.` };
+    if (!p.model.trim()) return { error: 'Enter a model id in Settings.' };
+    if (def.id === 'custom' && !p.baseUrl.trim()) return { error: 'Enter the base URL in Settings.' };
+    return { cfg: { provider: def.id, apiKey: p.apiKey, model: p.model.trim(), baseUrl: p.baseUrl.trim(), vision: p.vision } };
+  }, []);
+
   // ---------------------------------------------------------------- agent run
   const run = useCallback(
     async (goal: string) => {
       const text = goal.trim();
       if (!text) return;
-      if (!apiKey) {
-        Alert.alert('Add an API key', 'Open Settings from the menu and add your model API key.');
+      const { cfg, error } = await resolveLlm();
+      if (!cfg) {
+        Alert.alert('Almost there', error);
         return;
       }
       if (!A11y.isServiceEnabled()) {
@@ -111,7 +128,6 @@ export function useAssistant() {
       setTranscript('');
       setPhase('running');
       setMessages((m) => [...m, { role: 'user', text }, { role: 'assistant', text: '' }]);
-      A11y.setRunning(true, text);
 
       const setAssistant = (t: string) =>
         setMessages((m) => {
@@ -120,32 +136,53 @@ export function useAssistant() {
           return copy;
         });
 
+      const finish = (e: Extract<AgentEvent, { type: 'done' }>) => {
+        const final = e.explanation || (e.status === 'success' ? 'Done.' : 'Could not finish the task.');
+        setAssistant(final);
+        setPhase(convoOn.current ? 'listening' : 'idle');
+        A11y.setRunning(false);
+        // Bring our own UI back so the user sees the result.
+        A11y.launchApp(OWN_PACKAGE).catch(() => {});
+        if (settingsRef.current.speakResults) speak(final);
+        setTimeout(() => persistConvo(messagesRef.current), 0);
+      };
+
+      // On-device models must be loaded into memory first (can take a while).
+      if (cfg.provider === 'local') {
+        setAssistant('Loading the on-device model…');
+        try {
+          const { loadLocal } = require('../local/runtime') as typeof import('../local/runtime');
+          await loadLocal(localModelById(cfg.model)!, cfg.vision, (p) => setAssistant(`Loading the on-device model… ${Math.round(p * 100)}%`));
+          setAssistant('');
+        } catch (e: any) {
+          return finish({ type: 'done', status: 'failed', explanation: `Could not load the model: ${e?.message ?? e}` });
+        }
+      }
+
+      A11y.setRunning(true, text);
       const onEvent = (e: AgentEvent) => {
         if (e.type === 'turn') A11y.setRunning(true, `Step ${e.turn}: ${text}`);
+        if (e.type === 'plan') setAssistant('Plan:\n' + e.steps.map((t, i) => `${i + 1}. ${t}`).join('\n'));
+        if (e.type === 'step') A11y.setRunning(true, `Step ${e.index + 1}/${e.total}: ${e.text}`);
+        if (e.type === 'notice') setAssistant(e.text);
         if (e.type === 'thought') setAssistant(e.text);
         if (e.type === 'action' && !e.ok) setAssistant(`${e.call.name}: ${e.message}`);
-        if (e.type === 'done') {
-          const final = e.explanation || (e.status === 'success' ? 'Done.' : 'Could not finish the task.');
-          setAssistant(final);
-          setPhase('idle');
-          A11y.setRunning(false);
-          // Bring our own UI back so the user sees the result.
-          A11y.launchApp(OWN_PACKAGE).catch(() => {});
-          if (speakResults) speak(final);
-          setTimeout(() => persistConvo(messagesRef.current), 0);
-        }
+        if (e.type === 'done') finish(e);
       };
 
       runAgent({
         goal: text,
-        llm: { provider, apiKey, model },
+        llm: cfg,
         onEvent,
         signal: ctrl.signal,
         confirm: confirmAsync,
+        maxTurns: cfg.provider === 'local' ? 24 : 40,
       }).catch((e) => onEvent({ type: 'done', status: 'failed', explanation: String(e?.message ?? e) }));
     },
-    [apiKey, provider, model, speakResults, persistConvo],
+    [resolveLlm, persistConvo],
   );
+
+  runRef.current = run;
 
   useEffect(() => {
     const sub = A11y.addStopListener(() => abortRef.current?.abort());
@@ -192,14 +229,50 @@ export function useAssistant() {
     }
   }, [finishListening, level]);
 
+  /** Hands-free mode: the mic stays open; speaking interrupts the assistant's voice and "stop" aborts a task. */
+  const endConversation = useCallback(async () => {
+    convoOn.current = false;
+    setConversation(false);
+    await stopConversation();
+    stopSpeaking();
+    if (phaseRef.current === 'listening') setPhase('idle');
+    level.value = 0;
+  }, [level]);
+
+  const beginConversation = useCallback(async () => {
+    try {
+      stopSpeaking();
+      await startConversation({
+        onLevel: (l) => (level.value = l),
+        isAssistantSpeaking: isSpeaking,
+        onSpeechStart: () => { if (isSpeaking()) stopSpeaking(); }, // barge-in
+        onUtterance: (text) => {
+          setTranscript(text);
+          if (phaseRef.current === 'running') {
+            if (/^\W*(stop|cancel|abort|never ?mind)\b/i.test(text)) abortRef.current?.abort();
+            return;
+          }
+          runRef.current(text);
+        },
+      });
+      convoOn.current = true;
+      setConversation(true);
+      setPhase((p) => (p === 'idle' ? 'listening' : p));
+    } catch (e: any) {
+      Alert.alert('Voice error', String(e?.message ?? e));
+    }
+  }, [level]);
+
   const toggleMic = useCallback(() => {
-    if (phase === 'listening') finishListening();
-    else if (phase === 'idle') startVoice();
-  }, [phase, finishListening, startVoice]);
+    if (convoOn.current) endConversation();
+    else if (phaseRef.current === 'idle') beginConversation();
+  }, [endConversation, beginConversation]);
 
   const cancel = useCallback(async () => {
     stopSpeaking();
-    if (phase === 'listening') {
+    if (convoOn.current && phase !== 'running') {
+      await endConversation();
+    } else if (phase === 'listening') {
       stopPartial();
       await stopAndTranscribe().catch(() => '');
       setPhase('idle');
@@ -207,7 +280,7 @@ export function useAssistant() {
     } else if (phase === 'running') {
       abortRef.current?.abort();
     }
-  }, [phase]);
+  }, [phase, endConversation]);
 
   const downloadVoice = async () => {
     setDownloading(0);
@@ -232,13 +305,24 @@ export function useAssistant() {
     setMessages(c.messages);
   }, []);
 
+  const deleteConvo = useCallback((id: string) => {
+    setHistory((prev) => {
+      const next = prev.filter((c) => c.id !== id);
+      FS.writeAsStringAsync(HISTORY_PATH, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+    if (convoId.current === id) {
+      convoId.current = '';
+      setMessages([]);
+    }
+  }, []);
+
   return {
-    level, serviceEnabled, refreshService,
-    provider, model, apiKey, saveSettings,
+    level, serviceEnabled, refreshService, deleteConvo,
+    settings, updateSettings,
     phase, transcript, messages,
     modelReady, downloading, downloadVoice,
-    speakResults, setSpeakResults,
     history, newChat, openConvo,
-    run, toggleMic, cancel,
+    run, toggleMic, cancel, conversation,
   };
 }

@@ -1,21 +1,24 @@
-// Minimal multi-provider LLM client (direct HTTPS with the user's own key).
+// Multi-provider LLM client (direct HTTPS with the user's own key, or an on-device model).
 // Each call is stateless: the agent loop sends one prompt (+ optional screenshot)
 // and requires exactly one tool call back.
-import { TOOL_DECLARATIONS } from './tools';
+import { TOOL_DECLARATIONS, type ToolDecl } from './tools';
+import { providerById, type ProviderId } from './providers';
 
-export type Provider = 'anthropic' | 'openai' | 'gemini';
+export type Provider = ProviderId;
 
-export type LlmConfig = { provider: Provider; apiKey: string; model: string };
+export type LlmConfig = {
+  provider: ProviderId;
+  apiKey: string;
+  model: string;
+  /** Used by OpenAI-compatible providers (OpenAI, DeepSeek, custom). */
+  baseUrl?: string;
+  /** Attach screenshots? False for text-only models (they get the element list only). */
+  vision: boolean;
+};
 
 export type LlmReply = {
   thought: string;
   toolCall?: { name: string; args: Record<string, any> };
-};
-
-export const DEFAULT_MODELS: Record<Provider, string> = {
-  anthropic: 'claude-sonnet-5-5',
-  openai: 'gpt-4o',
-  gemini: 'gemini-2.5-flash',
 };
 
 type CallInput = {
@@ -24,6 +27,8 @@ type CallInput = {
   /** base64 JPEG without data: prefix */
   imageB64?: string;
   signal?: AbortSignal;
+  /** Tool set for this call; defaults to the device-control tools. */
+  tools?: ToolDecl[];
 };
 
 async function post(url: string, headers: Record<string, string>, body: unknown, signal?: AbortSignal) {
@@ -42,13 +47,20 @@ async function post(url: string, headers: Record<string, string>, body: unknown,
 }
 
 export async function callModel(cfg: LlmConfig, input: CallInput): Promise<LlmReply> {
-  switch (cfg.provider) {
+  const img = cfg.vision ? input.imageB64 : undefined;
+  const i = { ...input, imageB64: img };
+  switch (providerById(cfg.provider).kind) {
     case 'anthropic':
-      return callAnthropic(cfg, input);
-    case 'openai':
-      return callOpenAI(cfg, input);
+      return callAnthropic(cfg, i);
+    case 'openai-compat':
+      return callOpenAICompat(cfg, i);
     case 'gemini':
-      return callGemini(cfg, input);
+      return callGemini(cfg, i);
+    case 'local': {
+      // Lazy so the app still starts where llama.rn isn't available (e.g. Expo Go).
+      const { callLocal } = require('../local/runtime') as typeof import('../local/runtime');
+      return callLocal(i);
+    }
   }
 }
 
@@ -65,7 +77,7 @@ async function callAnthropic(cfg: LlmConfig, i: CallInput): Promise<LlmReply> {
       model: cfg.model,
       max_tokens: 1024,
       system: i.system,
-      tools: TOOL_DECLARATIONS.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })),
+      tools: (i.tools ?? TOOL_DECLARATIONS).map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })),
       tool_choice: { type: 'any' },
       messages: [{ role: 'user', content }],
     },
@@ -77,28 +89,40 @@ async function callAnthropic(cfg: LlmConfig, i: CallInput): Promise<LlmReply> {
   return { thought, toolCall: tu ? { name: tu.name, args: tu.input ?? {} } : undefined };
 }
 
-async function callOpenAI(cfg: LlmConfig, i: CallInput): Promise<LlmReply> {
+/** OpenAI, DeepSeek and any other server that implements POST {base}/chat/completions. */
+async function callOpenAICompat(cfg: LlmConfig, i: CallInput): Promise<LlmReply> {
+  const base = (cfg.baseUrl || providerById(cfg.provider).baseUrl || '').replace(/\/+$/, '');
+  if (!base) throw new Error('Set a base URL for this provider in Settings.');
   const userContent: any[] = [{ type: 'text', text: i.text }];
   if (i.imageB64) {
     userContent.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${i.imageB64}`, detail: 'low' } });
   }
-  const data = await post(
-    'https://api.openai.com/v1/chat/completions',
-    { authorization: `Bearer ${cfg.apiKey}` },
-    {
-      model: cfg.model,
-      tools: TOOL_DECLARATIONS.map((t) => ({
-        type: 'function',
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      })),
-      tool_choice: 'required',
-      messages: [
-        { role: 'system', content: i.system },
-        { role: 'user', content: userContent },
-      ],
-    },
-    i.signal,
-  );
+  const headers: Record<string, string> = cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {};
+  const body = (toolChoice: 'required' | 'auto') => ({
+    model: cfg.model,
+    tools: (i.tools ?? TOOL_DECLARATIONS).map((t) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    })),
+    tool_choice: toolChoice,
+    messages: [
+      { role: 'system', content: i.system },
+      // Text-only servers expect a plain string rather than a content-part array.
+      { role: 'user', content: i.imageB64 ? userContent : i.text },
+    ],
+  });
+
+  let data: any;
+  try {
+    data = await post(`${base}/chat/completions`, headers, body('required'), i.signal);
+  } catch (e: any) {
+    // Some servers/models reject tool_choice:"required" — retry letting the model decide.
+    if (String(e?.message).startsWith('LLM HTTP 400') || String(e?.message).startsWith('LLM HTTP 422')) {
+      data = await post(`${base}/chat/completions`, headers, body('auto'), i.signal);
+    } else {
+      throw e;
+    }
+  }
   const msg = data.choices?.[0]?.message ?? {};
   const tc = msg.tool_calls?.[0];
   let args: Record<string, any> = {};
@@ -123,7 +147,7 @@ async function callGemini(cfg: LlmConfig, i: CallInput): Promise<LlmReply> {
       systemInstruction: { parts: [{ text: i.system }] },
       tools: [
         {
-          functionDeclarations: TOOL_DECLARATIONS.map((t) => ({
+          functionDeclarations: (i.tools ?? TOOL_DECLARATIONS).map((t) => ({
             name: t.name,
             description: t.description,
             parameters: t.parameters,

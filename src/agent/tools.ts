@@ -7,8 +7,10 @@ import type { ScreenSnapshot } from '../../modules/a11y-control';
 export type ToolCall = { name: string; args: Record<string, any> };
 export type ToolResult = { ok: boolean; message: string };
 
+export type ToolDecl = { name: string; description: string; parameters: Record<string, any> };
+
 /** JSON-schema tool declarations (provider-agnostic; adapt per LLM API). */
-export const TOOL_DECLARATIONS = [
+export const TOOL_DECLARATIONS: ToolDecl[] = [
   {
     name: 'click',
     description: 'Tap a UI element by its index from the current element list, or by x/y pixel coordinates.',
@@ -71,11 +73,12 @@ export const TOOL_DECLARATIONS = [
       required: ['status', 'explanation'],
     },
   },
-] as const;
+];
 
 /** Compact text form of the element list for the prompt. */
-export function formatElements(s: ScreenSnapshot): string {
+export function formatElements(s: ScreenSnapshot, limit = 400): string {
   return s.elements
+    .slice(0, limit)
     .map((e) => {
       const flags = [e.clickable && 'click', e.editable && 'edit', e.scrollable && 'scroll', e.checked && 'checked']
         .filter(Boolean)
