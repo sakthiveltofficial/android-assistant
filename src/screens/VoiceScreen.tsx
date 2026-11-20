@@ -20,6 +20,10 @@ type Props = {
   onCancel: () => void;
   /** Opens the account menu (Profile / Chat history / Settings). */
   onAvatar: () => void;
+  /** Opens the model switcher under the top pill. */
+  onModel: () => void;
+  /** Name of the active model, shown in the pill. */
+  modelLabel: string;
   /** Clears the conversation and starts a fresh one. */
   onNewChat: () => void;
   /** First letter of the profile name, shown inside the avatar. */
@@ -27,14 +31,14 @@ type Props = {
   onSend: (text: string) => void;
 };
 
-export function Header({ onAvatar, initial }: { onAvatar: () => void; initial?: string }) {
+export function Header({ onAvatar, onModel, modelLabel, initial }: { onAvatar: () => void; onModel: () => void; modelLabel: string; initial?: string }) {
   return (
     <View style={s.header}>
       <View style={s.avatarSpacer} />
-      <View style={s.pill}>
-        <Text style={s.pillText}>{APP_NAME}</Text>
+      <Pressable style={s.pill} onPress={onModel} hitSlop={6}>
+        <Text style={[s.pillText, { maxWidth: 190 }]} numberOfLines={1}>{modelLabel || APP_NAME}</Text>
         <Ionicons name="chevron-down" size={11} color={colors.muted} style={{ marginLeft: 4 }} />
-      </View>
+      </Pressable>
       <Pressable onPress={onAvatar} style={s.avatar} hitSlop={8}>
         {initial ? (
           <Text style={s.avatarText}>{initial}</Text>
@@ -66,7 +70,7 @@ export function VoiceScreen(p: Props) {
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <BottomGlow tone={tone} height={340} />
       <View style={{ paddingTop: insets.top + 8, flex: 1 }}>
-        <Header onAvatar={p.onAvatar} initial={p.initial} />
+        <Header onAvatar={p.onAvatar} onModel={p.onModel} modelLabel={p.modelLabel} initial={p.initial} />
 
         {showChat ? (
           <ScrollView contentContainerStyle={s.chat} showsVerticalScrollIndicator={false}>

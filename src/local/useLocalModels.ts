@@ -52,5 +52,5 @@ export function useLocalModels() {
     [set],
   );
 
-  return { state, download, cancel, remove };
+  return { state, download, cancel, remove, refresh };
 }
