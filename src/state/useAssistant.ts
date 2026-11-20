@@ -112,13 +112,6 @@ export function useAssistant() {
         Alert.alert('Almost there', error);
         return;
       }
-      if (!A11y.isServiceEnabled()) {
-        Alert.alert('Accessibility service is off', 'Enable "Android Assistant" in Accessibility settings.', [
-          { text: 'Open settings', onPress: A11y.openAccessibilitySettings },
-          { text: 'Cancel', style: 'cancel' },
-        ]);
-        return;
-      }
       if (Platform.OS === 'android' && Platform.Version >= 33) {
         await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS');
       }
@@ -136,13 +129,16 @@ export function useAssistant() {
           return copy;
         });
 
+      let controlling = false;
       const finish = (e: Extract<AgentEvent, { type: 'done' }>) => {
         const final = e.explanation || (e.status === 'success' ? 'Done.' : 'Could not finish the task.');
         setAssistant(final);
         setPhase(convoOn.current ? 'listening' : 'idle');
-        A11y.setRunning(false);
-        // Bring our own UI back so the user sees the result.
-        A11y.launchApp(OWN_PACKAGE).catch(() => {});
+        if (controlling) {
+          // Only after real phone control: drop the overlay and bring our own UI back with the result.
+          A11y.setRunning(false);
+          A11y.launchApp(OWN_PACKAGE).catch(() => {});
+        }
         if (settingsRef.current.speakResults) speak(final);
         setTimeout(() => persistConvo(messagesRef.current), 0);
       };
@@ -159,11 +155,12 @@ export function useAssistant() {
         }
       }
 
-      A11y.setRunning(true, text);
+      const context = messagesRef.current.slice(-8, -2).map((m) => m.role + ': ' + m.text).join(' | ');
       const onEvent = (e: AgentEvent) => {
-        if (e.type === 'turn') A11y.setRunning(true, `Step ${e.turn}: ${text}`);
+        if (e.type === 'control') { controlling = true; A11y.setRunning(true, text); }
+        if (e.type === 'turn' && controlling) A11y.setRunning(true, `Step ${e.turn}: ${text}`);
         if (e.type === 'plan') setAssistant('Plan:\n' + e.steps.map((t, i) => `${i + 1}. ${t}`).join('\n'));
-        if (e.type === 'step') A11y.setRunning(true, `Step ${e.index + 1}/${e.total}: ${e.text}`);
+        if (e.type === 'step') if (controlling) A11y.setRunning(true, `Step ${e.index + 1}/${e.total}: ${e.text}`);
         if (e.type === 'notice') setAssistant(e.text);
         if (e.type === 'thought') setAssistant(e.text);
         if (e.type === 'action' && !e.ok) setAssistant(`${e.call.name}: ${e.message}`);
@@ -175,6 +172,7 @@ export function useAssistant() {
         llm: cfg,
         onEvent,
         signal: ctrl.signal,
+        context,
         confirm: confirmAsync,
         maxTurns: cfg.provider === 'local' ? 24 : 40,
       }).catch((e) => onEvent({ type: 'done', status: 'failed', explanation: String(e?.message ?? e) }));

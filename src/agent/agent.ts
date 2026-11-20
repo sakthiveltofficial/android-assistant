@@ -9,6 +9,7 @@ export type AgentEvent =
   | { type: 'thought'; text: string }
   | { type: 'action'; call: ToolCall; ok: boolean; message: string }
   | { type: 'notice'; text: string }
+  | { type: 'control' }
   | { type: 'plan'; steps: string[] }
   | { type: 'step'; index: number; total: number; text: string }
   | { type: 'done'; status: 'success' | 'failed' | 'stopped'; explanation: string };
@@ -19,6 +20,8 @@ export type RunOptions = {
   maxTurns?: number;
   onEvent: (e: AgentEvent) => void;
   signal: AbortSignal;
+  /** Recent chat turns (oldest first) so plain conversation keeps context. */
+  context?: string;
   /** Called before a sensitive action. Return false to block it. */
   confirm: (description: string) => Promise<boolean>;
 };
@@ -85,6 +88,22 @@ const FINAL: ToolDecl = {
   parameters: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] },
 };
 
+const REPLY: ToolDecl = {
+  name: 'reply',
+  description: 'Answer the user directly in chat. Use when the phone does not need to be operated.',
+  parameters: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] },
+};
+const USE_PHONE: ToolDecl = {
+  name: 'use_phone',
+  description: 'The request needs the phone to be operated (open or use apps, tap, type, change settings, send, read what is on the screen).',
+  parameters: { type: 'object', properties: {} },
+};
+const ROUTER_PROMPT = `You are a helpful voice/chat assistant that can also operate the user's Android phone.
+Decide how to handle the user's latest message:
+- Conversation, questions, explanations, writing, math, advice, general knowledge -> call reply with a concise answer.
+- Anything that requires acting on the phone or looking at its screen (open an app, search inside an app, send a message, change a setting, read a notification, etc.) -> call use_phone.
+When unsure and no phone action is clearly requested, prefer reply. Never call use_phone just to answer a question you can answer yourself.`;
+
 const PLANNER_PROMPT = `You are the planner for an agent that operates an Android phone through its UI (tap, swipe, type, open apps, press system keys).
 Break the user's goal into 2-8 ordered, concrete steps. Each step must be one thing that can be checked on screen (e.g. "Open Gmail", "Search for 'invoice' and open the newest result", "Read the total and remember it").
 Steps are written for an operator who sees the screen; do not give coordinates. Put information-gathering steps before steps that use the information.
@@ -119,8 +138,6 @@ export async function runAgent(opts: RunOptions): Promise<void> {
 
   const finish = (status: 'success' | 'failed' | 'stopped', explanation: string) =>
     onEvent({ type: 'done', status, explanation });
-
-  if (!A11y.isServiceEnabled()) return finish('failed', 'Accessibility service is not enabled.');
 
   const textCall = async (system: string, text: string, tools: ToolDecl[], image?: string) => {
     try {
@@ -255,6 +272,19 @@ export async function runAgent(opts: RunOptions): Promise<void> {
 
   // ---------------------------------------------------------------------------------------------
   try {
+    // Route first: plain chat is answered in the app without ever touching the phone.
+    const route = await textCall(ROUTER_PROMPT, `${opts.context ? `RECENT CHAT:
+${opts.context}
+
+` : ''}USER MESSAGE: ${goal}`, [REPLY, USE_PHONE]);
+    if (signal.aborted) return finish('stopped', 'Stopped by user.');
+    if (route?.toolCall?.name === 'reply') {
+      const a = String(route.toolCall.args.answer ?? '').trim();
+      return finish('success', a || route.thought || 'Done.');
+    }
+    if (!A11y.isServiceEnabled()) return finish('failed', 'Turn on the Accessibility service in Settings so I can use your phone.');
+    onEvent({ type: 'control' });
+
     // Leave our own UI so the first observation is the home screen, not this app.
     await A11y.globalAction('home');
     await sleep(800);
