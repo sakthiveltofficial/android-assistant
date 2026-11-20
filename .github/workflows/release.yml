@@ -32,7 +32,9 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      # The ubuntu runner image already ships the Android SDK; accept licenses so Gradle can fetch platforms, build-tools and NDK.
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager --licenses > /dev/null || true
 
       - name: Install dependencies
         run: npm ci
