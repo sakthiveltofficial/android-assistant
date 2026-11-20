@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { SharedValue } from 'react-native-reanimated';
 import { Orb } from '../ui/Orb';
+import { OrbButton } from '../ui/OrbButton';
 import { BottomGlow } from '../ui/BottomGlow';
 import { APP_NAME, colors, fonts } from '../ui/theme';
 import type { Msg, Phase } from '../state/useAssistant';
@@ -137,14 +138,14 @@ export function VoiceScreen(p: Props) {
           <Pressable style={s.sideBtn} onPress={() => setTyping((v) => !v)} disabled={running}>
             <Ionicons name="keypad-outline" size={20} color={colors.text} />
           </Pressable>
-          <Pressable onPress={p.onMic} disabled={running || p.phase === 'transcribing'} style={running ? { opacity: 0.45 } : undefined}>
-            <LinearGradient colors={['#FF6A1A', '#FF3D00']} style={s.mic}>
-              <Ionicons name={listening ? 'stop' : 'mic-outline'} size={listening ? 20 : 24} color="#fff" />
-            </LinearGradient>
-          </Pressable>
-          <Pressable style={s.sideBtn} onPress={listening || running ? p.onCancel : p.onNewChat}>
-            <Ionicons name="close" size={22} color={colors.text} />
-          </Pressable>
+          <OrbButton
+            size={84}
+            active={p.phase !== 'idle'}
+            level={p.level}
+            disabled={p.phase === 'transcribing'}
+            onPress={p.phase === 'idle' ? p.onMic : p.onCancel}
+          />
+          <View style={s.sideSpacer} />
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -182,6 +183,7 @@ const s = StyleSheet.create({
   input: { flex: 1, color: colors.fg, fontFamily: fonts.regular, fontSize: 15 },
 
   controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 32, paddingTop: 8 },
+  sideSpacer: { width: 44, height: 44 },
   sideBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.glass, alignItems: 'center', justifyContent: 'center' },
   mic: { width: 60, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center', shadowColor: '#FF5A00', shadowOpacity: 0.6, shadowRadius: 16, shadowOffset: { width: 0, height: 4 }, elevation: 10 },
 });

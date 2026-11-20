@@ -5,6 +5,8 @@
 **A standalone, on-device AI assistant that can see and operate your whole Android phone.**
 Bring your own model key, or run Gemma fully offline. No PC, no ADB.
 
+[![CI](https://github.com/sakthiveltofficial/android-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/sakthiveltofficial/android-assistant/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/sakthiveltofficial/android-assistant?include_prereleases)](https://github.com/sakthiveltofficial/android-assistant/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Android%2011%2B-3ddc84)
 ![Built with](https://img.shields.io/badge/built%20with-Expo%20%2B%20React%20Native-000020)
@@ -61,6 +63,10 @@ It is an independent re-implementation of the ideas behind Google's [Artemis](ht
 | clipboard-paste for text | `ACTION_SET_TEXT` |
 | external orchestrator | agent loop in TypeScript, calling your model |
 
+## Download
+
+Prebuilt APKs are attached to each [GitHub Release](https://github.com/sakthiveltofficial/android-assistant/releases) (arm64 phones, Android 11+). Verify the download against the `.sha256` file, install the APK, then follow the setup steps below. Builds are produced automatically by GitHub Actions; see [Releases and CI](#releases-and-ci).
+
 ## Requirements
 
 - An Android phone on **Android 11 (API 30) or newer** (screenshots need API 30+).
@@ -95,6 +101,20 @@ On the phone:
 - **Xiaomi / MIUI "INSTALL_FAILED_USER_RESTRICTED"**: enable *Install via USB* in Developer options.
 - **Installing `llama.rn` from Git Bash on Windows** can fail because of GNU `tar`; run `npm install` from PowerShell.
 - Typecheck with `npx tsc --noEmit`.
+
+## Releases and CI
+
+- **CI** (`.github/workflows/ci.yml`) typechecks every push and pull request.
+- **Release** (`.github/workflows/release.yml`) builds the Android APK and publishes it as a GitHub Release whenever a version tag is pushed:
+
+  ```bash
+  git tag v0.1.0
+  git push origin v0.1.0
+  ```
+
+  It can also be run by hand from the Actions tab to produce an APK artifact without publishing.
+- **Signing.** Without secrets the APK is signed with the debug key, which is fine for trying it out. To sign releases with your own key, add these repository secrets: `ANDROID_KEYSTORE_BASE64` (the keystore, base64-encoded), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Keep the same key across releases, or users cannot update in place.
+- Tags containing a hyphen (for example `v0.2.0-beta.1`) are published as pre-releases.
 
 ## Project layout
 

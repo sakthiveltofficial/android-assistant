@@ -135,6 +135,7 @@ export default function App() {
         name={name}
         onClose={() => setMenuOpen(false)}
         items={[
+          { icon: 'create-outline', label: 'New chat', onPress: () => { a.newChat(); setScreen('main'); } },
           { icon: 'person-outline', label: 'Profile', onPress: () => setScreen('profile') },
           { icon: 'time-outline', label: 'Chat history', onPress: () => setScreen('history') },
           { icon: 'settings-outline', label: 'Settings', onPress: () => setScreen('settings') },

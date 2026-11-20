@@ -1,0 +1,119 @@
+name: Build and release APK
+
+# Push a tag like v0.1.0 to build the app and publish it as a GitHub Release.
+# Run it manually (Actions tab -> "Build and release APK" -> Run workflow) to build an APK artifact without publishing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the GitHub Release
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+      - name: Fetch llama.rn prebuilt native artifacts (checksum-verified by its own script)
+        run: node ./install/download-native-artifacts.js
+        working-directory: node_modules/llama.rn
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Generate the native Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('package-lock.json', 'app.json') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      # Optional release signing. Without these secrets the APK is signed with the debug key:
+      # fine for testing, but updates over a differently signed build will not install.
+      #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+      - name: Prepare signing (if configured)
+        id: sign
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing keystore configured; building with the debug key."
+          fi
+
+      - name: Build release APK (arm64-v8a)
+        working-directory: android
+        env:
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ARGS="-PreactNativeArchitectures=arm64-v8a --no-daemon"
+          if [ "${{ steps.sign.outputs.signed }}" = "true" ]; then
+            ARGS="$ARGS -Pandroid.injected.signing.store.file=$RUNNER_TEMP/release.keystore"
+            ARGS="$ARGS -Pandroid.injected.signing.store.password=$KS_PASS"
+            ARGS="$ARGS -Pandroid.injected.signing.key.alias=$KEY_ALIAS"
+            ARGS="$ARGS -Pandroid.injected.signing.key.password=$KEY_PASS"
+          fi
+          ./gradlew assembleRelease $ARGS
+
+      - name: Name the APK
+        id: name
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE}" = "tag" ] || VER="dev-${GITHUB_SHA::7}"
+          cp android/app/build/outputs/apk/release/app-release.apk "android-assistant-${VER}-arm64-v8a.apk"
+          sha256sum "android-assistant-${VER}-arm64-v8a.apk" > "android-assistant-${VER}-arm64-v8a.apk.sha256"
+          echo "file=android-assistant-${VER}-arm64-v8a.apk" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-assistant-apk
+          path: |
+            ${{ steps.name.outputs.file }}
+            ${{ steps.name.outputs.file }}.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            ${{ steps.name.outputs.file }}
+            ${{ steps.name.outputs.file }}.sha256
+          body: |
+            Early-alpha build. Install the APK, then enable the *Android Assistant* accessibility service in Settings.
+            ${{ steps.sign.outputs.signed == 'true' && 'Signed with the project release key.' || 'Signed with the debug key (no release keystore configured).' }}
+            Verify the download with the attached `.sha256` file.
