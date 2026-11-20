@@ -1,0 +1,4 @@
+<resources>
+  <string name="a11y_service_label">Android Assistant</string>
+  <string name="a11y_service_description">Lets the assistant read the screen and perform taps, swipes, typing and navigation on your behalf when you give it a task. Screen content is sent to the AI model you configured.</string>
+</resources>

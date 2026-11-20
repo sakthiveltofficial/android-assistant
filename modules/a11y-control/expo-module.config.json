@@ -1,0 +1,6 @@
+{
+  "platforms": ["android"],
+  "android": {
+    "modules": ["expo.modules.a11ycontrol.A11yControlModule"]
+  }
+}
